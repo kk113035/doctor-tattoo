@@ -90,6 +90,35 @@ nav{position:fixed;top:env(safe-area-inset-top,0px);left:0;right:0;z-index:50;di
 .gCap b{font-family:'Bebas Neue',sans-serif;font-size:1.5rem;font-weight:400;letter-spacing:.06em}
 .gCap span{font-size:1.4rem;color:var(--red)}
 .note{color:var(--mute);font-size:.9rem;margin-top:8px}
+
+/* gallery toggle */
+.galTools{display:flex;gap:10px;margin-top:22px}
+.chip{background:none;border:1px solid var(--line);color:var(--ink);padding:10px 22px;min-height:44px;border-radius:30px;cursor:pointer;font:inherit;font-size:.95rem;transition:.3s}
+.chip:hover,.chip.on{background:var(--red);border-color:var(--red);color:#fff}
+
+/* 3D ring carousel */
+#ringWrap{position:relative;margin-top:8px}
+.ring{position:relative;height:clamp(380px,62vh,520px);perspective:1400px;overflow:hidden;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none;outline:none}
+.ring.drag{cursor:grabbing}
+.ring:focus-visible{box-shadow:0 0 0 2px var(--red) inset;border-radius:12px}
+.ringOrbit{position:absolute;left:50%;bottom:6%;width:78%;height:70px;transform:translateX(-50%);border:1px dashed var(--line);border-radius:50%;pointer-events:none}
+.rCard{position:absolute;left:50%;top:50%;width:clamp(200px,24vw,300px);aspect-ratio:3/4;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:var(--bg2);box-shadow:0 18px 40px rgba(0,0,0,.35);will-change:transform,opacity;cursor:pointer;transition:border-color .3s,box-shadow .3s}
+.rCard img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}
+.rCard.front{border-color:var(--red);box-shadow:0 0 34px var(--glow),0 22px 50px rgba(0,0,0,.45)}
+.ringBtn{position:absolute;top:calc(50% - 60px);width:48px;height:48px;border-radius:50%;border:1px solid var(--line);background:var(--nav);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:var(--ink);font-size:1.5rem;cursor:pointer;z-index:200;transition:.3s}
+.ringBtn:hover{background:var(--red);border-color:var(--red);color:#fff;transform:scale(1.1)}
+.ringBtn.prev{left:0}.ringBtn.next{right:0}
+.ringInfo{text-align:center;margin-top:6px}
+.ringInfo h3{font-size:2rem}
+.ringInfo p{color:var(--mute);font-size:.9rem}
+.ringBar{height:3px;max-width:320px;margin:14px auto 0;background:var(--line);border-radius:3px;overflow:hidden}
+.ringBar i{display:block;height:100%;width:0;background:var(--red);transition:width .35s}
+@media (max-width:700px){
+ .rCard{width:56vw}
+ .ring{height:clamp(340px,56vh,440px)}
+ .ringBtn{width:40px;height:40px;font-size:1.3rem}
+}
+
 /* lightbox */
 #lb{position:fixed;inset:0;background:rgba(6,6,6,.96);z-index:500;display:none;place-items:center;padding:20px;color:#f3ede4}
 #lb.open{display:grid}
@@ -293,8 +322,23 @@ nav{-webkit-backdrop-filter:blur(10px)}
 <section id="work">
  <div class="reveal">
   <p class="tag">My work</p><h2>Gallery</h2>
-  <p class="note">Tap any piece to open it. Swipe or use the arrow keys to flip through.</p>
-  <div class="masonry" id="grid"></div>
+  <p class="note" id="galNote">Drag, swipe or use the arrows. Tap the centre piece to open it.</p>
+  <div class="galTools">
+   <button class="chip on" id="modeRing" type="button">Carousel</button>
+   <button class="chip" id="modeGrid" type="button">View all</button>
+  </div>
+
+  <div id="ringWrap">
+   <div class="ring" id="ring" tabindex="0" aria-label="Tattoo gallery carousel">
+    <div class="ringOrbit" aria-hidden="true"></div>
+   </div>
+   <button class="ringBtn prev" id="ringPrev" type="button" aria-label="Previous">&#8249;</button>
+   <button class="ringBtn next" id="ringNext" type="button" aria-label="Next">&#8250;</button>
+   <div class="ringInfo"><h3 id="ringTitle"></h3><p id="ringCount"></p></div>
+   <div class="ringBar"><i id="ringFill"></i></div>
+  </div>
+
+  <div class="masonry" id="grid" hidden></div>
  </div>
 </section>
 
@@ -498,6 +542,7 @@ function closeLightbox() { document.getElementById('lb').className = ''; }
 function stepLightbox(dir) {
   currentIndex = (currentIndex + dir + galleryItems.length) % galleryItems.length;
   showLightboxItem(currentIndex, dir);
+  goRing(currentIndex);
 }
 function onKey(e) {
   if (document.getElementById('lb').className !== 'open') { return; }
@@ -691,6 +736,159 @@ function setupNav() {
   links.addEventListener('click', function () { links.className = 'links'; });
 }
 
+// ===== RING CAROUSEL =====
+var ringState = {pos: 0, target: 0, raf: 0, cards: [], drag: false, moved: false, startX: 0, startPos: 0, shown: -1, still: false};
+
+function wrapDiff(d, n) { return ((d + n / 2) % n + n) % n - n / 2; }
+function ringIndex() {
+  var n = ringState.cards.length;
+  return ((Math.round(ringState.target) % n) + n) % n;
+}
+function renderRing() {
+  var s = ringState, n = s.cards.length;
+  if (!n) { return; }
+  var w = document.getElementById('ring').clientWidth;
+  var cw = s.cards[0].offsetWidth;
+  var radius = Math.max(w * 0.5, cw * 1.5);
+  var step = 0.45;
+  for (var i = 0; i < n; i++) {
+    var c = s.cards[i];
+    var d = wrapDiff(i - s.pos, n);
+    var ad = Math.abs(d);
+    if (ad > 3.2) { c.style.visibility = 'hidden'; continue; }
+    var a = d * step;
+    var x = Math.sin(a) * radius;
+    var z = (Math.cos(a) - 1) * radius;
+    var y = (1 - Math.cos(a)) * radius * 0.1;
+    c.style.visibility = 'visible';
+    c.style.transform = 'translate(-50%,-50%) translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,' + z.toFixed(1) + 'px) rotateY(' + (a * 57.2958).toFixed(2) + 'deg)';
+    c.style.opacity = Math.max(0, 1 - ad * 0.28).toFixed(2);
+    c.style.filter = 'brightness(' + Math.max(0.35, 1 - ad * 0.2).toFixed(2) + ')';
+    c.style.zIndex = 100 - Math.round(ad * 10);
+    c.className = ad < 0.5 ? 'rCard front' : 'rCard';
+  }
+}
+function updateRingInfo() {
+  var n = ringState.cards.length;
+  var idx = ((Math.round(ringState.pos) % n) + n) % n;
+  if (idx === ringState.shown) { return; }
+  ringState.shown = idx;
+  document.getElementById('ringTitle').textContent = galleryItems[idx].title;
+  document.getElementById('ringCount').textContent = (idx + 1) + ' / ' + n;
+  document.getElementById('ringFill').style.width = ((idx + 1) / n * 100) + '%';
+}
+function tickRing() {
+  var s = ringState;
+  s.raf = 0;
+  var diff = s.target - s.pos;
+  if (Math.abs(diff) < 0.002) { s.pos = s.target; renderRing(); updateRingInfo(); return; }
+  s.pos += diff * 0.14;
+  renderRing();
+  updateRingInfo();
+  s.raf = requestAnimationFrame(tickRing);
+}
+function animateRing() {
+  var s = ringState;
+  if (s.still) { s.pos = s.target; renderRing(); updateRingInfo(); return; }
+  if (!s.raf) { s.raf = requestAnimationFrame(tickRing); }
+}
+function moveRing(dir) {
+  ringState.target = Math.round(ringState.target) + dir;
+  animateRing();
+}
+function goRing(index) {
+  var n = ringState.cards.length;
+  if (!n) { return; }
+  var base = Math.round(ringState.target);
+  ringState.target = base + wrapDiff(index - base, n);
+  animateRing();
+}
+function makeRingClick(i) {
+  return function () {
+    if (ringState.moved) { return; }
+    if (i === ringIndex()) { openLightbox(i); } else { goRing(i); }
+  };
+}
+function buildRing() {
+  var ring = document.getElementById('ring');
+  var s = ringState;
+  s.still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  for (var i = 0; i < galleryItems.length; i++) {
+    var item = galleryItems[i];
+    var c = document.createElement('div');
+    c.className = 'rCard';
+    c.setAttribute('role', 'button');
+    c.setAttribute('aria-label', item.title);
+    var img = document.createElement('img');
+    img.src = item.src;
+    img.alt = item.alt || item.title;
+    img.draggable = false;
+    img.decoding = 'async';
+    c.appendChild(img);
+    c.addEventListener('click', makeRingClick(i));
+    ring.appendChild(c);
+    s.cards.push(c);
+  }
+  ring.addEventListener('pointerdown', function (e) {
+    s.drag = true; s.moved = false; s.startX = e.clientX; s.startPos = s.pos;
+  });
+  ring.addEventListener('pointermove', function (e) {
+    if (!s.drag) { return; }
+    var dx = e.clientX - s.startX;
+    if (!s.moved && Math.abs(dx) > 8) {
+      s.moved = true;
+      ring.className = 'ring drag';
+      try { ring.setPointerCapture(e.pointerId); } catch (err) {}
+      if (s.raf) { cancelAnimationFrame(s.raf); s.raf = 0; }
+    }
+    if (s.moved) {
+      s.pos = s.startPos - dx / (s.cards[0].offsetWidth * 0.55);
+      s.target = s.pos;
+      renderRing();
+      updateRingInfo();
+    }
+  });
+  var endDrag = function () {
+    if (!s.drag) { return; }
+    s.drag = false;
+    ring.className = 'ring';
+    if (s.moved) {
+      s.target = Math.round(s.pos);
+      animateRing();
+      setTimeout(function () { s.moved = false; }, 0);
+    }
+  };
+  ring.addEventListener('pointerup', endDrag);
+  ring.addEventListener('pointercancel', endDrag);
+  ring.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight') { e.preventDefault(); moveRing(1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); moveRing(-1); }
+    if (e.key === 'Enter') { openLightbox(ringIndex()); }
+  });
+  document.getElementById('ringPrev').addEventListener('click', function () { moveRing(-1); });
+  document.getElementById('ringNext').addEventListener('click', function () { moveRing(1); });
+  window.addEventListener('resize', renderRing);
+  renderRing();
+  updateRingInfo();
+}
+function setGalleryMode(showGrid) {
+  document.getElementById('ringWrap').style.display = showGrid ? 'none' : '';
+  document.getElementById('grid').hidden = !showGrid;
+  document.getElementById('modeRing').className = showGrid ? 'chip' : 'chip on';
+  document.getElementById('modeGrid').className = showGrid ? 'chip on' : 'chip';
+  document.getElementById('galNote').textContent = showGrid
+    ? 'Tap any piece to open it. Swipe or use the arrow keys to flip through.'
+    : 'Drag, swipe or use the arrows. Tap the centre piece to open it.';
+  if (showGrid) {
+    var items = document.querySelectorAll('#grid .gItem');
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].className.indexOf('show') === -1) { items[i].className += ' show'; }
+    }
+  } else {
+    renderRing();
+  }
+}
+
 // ===== MAIN =====
 function main() {
   loadTheme();
@@ -700,6 +898,9 @@ function main() {
   document.getElementById('yr').textContent = new Date().getFullYear();
   buildMarquee();
   buildGallery();
+  buildRing();
+  document.getElementById('modeRing').addEventListener('click', function () { setGalleryMode(false); });
+  document.getElementById('modeGrid').addEventListener('click', function () { setGalleryMode(true); });
   buildFaq();
   buildAftercare();
   setupReveal();
